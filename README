@@ -1,0 +1,9 @@
+# Client to download continous waveforms
+
+Usage:
+```py
+from client import Client
+c = Client()
+c.get_waveforms('*','BO*', '2020-06-25T17:19:16Z', '2020-06-26T17:20:16Z')
+```
+
