@@ -4,6 +4,7 @@ Usage:
 ```py
 from client import Client
 c = Client()
+# this will download and extract files into the temp directory:
 c.get_waveforms('*','BO*', '2020-06-25T17:19:16Z', '2020-06-26T17:20:16Z')
 ```
 

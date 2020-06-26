@@ -13,9 +13,12 @@ import pickle
 
 import requests
 from obspy import UTCDateTime
-from params import params as p
+# from params import params as p
 
-p = pickle.load(open("params.pickle", "rb", -1)) 
+pickle_dir = os.path.dirname(os.path.realpath(__file__))
+pickle_path = os.path.join(pickle_dir,"params.pickle")
+
+p = pickle.load(open(pickle_path, "rb", -1)) 
 
 
 # 10 day / single station
