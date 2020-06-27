@@ -147,6 +147,7 @@ class Client:
     _CHUNK_SIZE = 128
 
     def __init__(self, dry_run=False, email="", verbosity=0, temp_path="temp"):
+        print(p.WARNING)
         # randomly select a user agent
         self.verbosity = verbosity
         self._init_verbosity()
