@@ -5,12 +5,15 @@ with open("README", "r") as fh:
 
 setuptools.setup(
     name='afdcli',  
-    version='0.1.6',
+    version='0.2.0',
     scripts=['bin/afdcli'] ,
     author="Yaman Özakin",
     author_email="",
     description="Seismic waveform downloading client",
     include_package_data=True,
+    package_data={
+        "": ['params.py','save_params.py'],
+    },
     install_requires=[
         'requests',
         'numpy',

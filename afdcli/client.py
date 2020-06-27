@@ -10,15 +10,37 @@ import time
 import zipfile
 import os
 import pickle
+import hashlib 
 
 import requests
 from obspy import UTCDateTime
 # from params import params as p
 
-pickle_dir = os.path.dirname(os.path.realpath(__file__))
+try:
+    pickle_dir = os.path.dirname(os.path.realpath(__file__))
+except NameError:
+    pickle_dir = './'
+
 pickle_path = os.path.join(pickle_dir,"params.pickle")
 
-p = pickle.load(open(pickle_path, "rb", -1)) 
+with open(pickle_path, "rb") as file:
+    params = pickle.load(file) 
+
+class Struct:
+    def __init__(self, **entries):
+        self.__dict__.update(entries)
+
+
+p = Struct(**params)
+
+# params obj
+##############
+# pickle_path = os.path.join(pickle_dir,"params_obj.pickle")
+
+# with open(pickle_path, "rb") as file:
+#     p = pickle.load(file) 
+##############
+
 
 
 # 10 day / single station
@@ -32,7 +54,7 @@ p = pickle.load(open(pickle_path, "rb", -1))
 
 ONE_DAY = 60*60*24
 TEN_DAYS = ONE_DAY * 10
-
+DISPOSABLE_EMAIL_API = 'https://privatix-temp-mail-v1.p.rapidapi.com/request/mail/id/md5/'
 
 class WFRequest:
     order_number = None
@@ -119,17 +141,20 @@ class Client:
     _email = ''
     _order_number = None
     _wf_request = None
-    _max_retries = 3
+    _max_retries = 1
     verbosity = 0
     dry_run = False
     _CHUNK_SIZE = 128
 
-    def __init__(self, dry_run=False, verbosity=0, temp_path="temp"):
+    def __init__(self, dry_run=False, email="", verbosity=0, temp_path="temp"):
         # randomly select a user agent
         self.verbosity = verbosity
         self._init_verbosity()
         self.dry_run = dry_run
         self.temp_path = temp_path
+        if email:
+            self._email = email
+            self.randomize_email = False
         if self.randomize_user_agent:
             self.shuffle_useragent()
         else:
@@ -151,8 +176,13 @@ class Client:
         self._headers['User-Agent'] = user_agent
 
     def _generate_email(self):
-        n = random.randint(5,15)
-        self._email = ''.join(random.choice(string.ascii_letters) for x in range(n)) + '@fastmail.com'
+        # using temp-mail.org to generate random email address
+        if not self.randomize_email:
+            # self._email = 'hefix31026@mailrnl.com'
+            return 
+        else:
+            n = random.randint(5,15)
+            self._email = ''.join(random.choice(string.ascii_letters) for x in range(n)) + '@mailrnl.com'
 
     def shuffle_useragent(self):
         self._user_agent = random.choice(p.USER_AGENTS)
@@ -294,6 +324,7 @@ class Client:
     def make_wf_request(self, wf_request):
         if not self.dry_run:
             order_number = self._get_order_number() # need a new one for each request
+            time.sleep(1)
             wf_request.order_number = f'{order_number}'
         else:
             order_number = '1234'
