@@ -340,7 +340,7 @@ class Client:
     def _process_file(self, file_path, order_number):
         file_url = os.path.relpath(file_path,p.FILE_WEB_ROOT)
         url = urljoin(p.HOST,file_url)
-        dir_name = base64.urlsafe_b64encode(uuid.uuid1().bytes).rstrip(b'=').decode('ascii')
+        dir_name = f'{uuid.uuid1()}'
         outdir = os.path.join(self.temp_path,f'{dir_name}')
         print(f'Downloading: {url}')
         file_path = self._download_file(url,outdir,file_path)

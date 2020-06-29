@@ -5,7 +5,7 @@ with open("README.md", "r") as fh:
 
 setuptools.setup(
     name='afdcli',  
-    version='0.3.1',
+    version='0.3.2',
     scripts=['bin/afdcli'] ,
     author="Yaman Özakin",
     author_email="",
