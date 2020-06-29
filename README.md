@@ -5,7 +5,7 @@ This tool was created to automate waveform and station data download. Please cit
 ## Installation
 
 ```sh
-pip install numpy
+pip install numpy==1.8.1 # obspy 1.2.1 is not compatible with numpy 1.9.1
 pip install afdcli
 ```
 
