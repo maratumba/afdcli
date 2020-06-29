@@ -11,6 +11,8 @@ import zipfile
 import os
 import pickle
 import hashlib 
+import uuid
+import base64
 
 import requests
 from obspy import UTCDateTime
@@ -80,13 +82,13 @@ class WFRequest:
             t = time
         return f'{t.year}-{t.month}-{t.day} {t.hour}:{t.minute}:{t.second}'
 
-    def create_request(self,stations=[],components=[],email='',order_number=None,starttime=None,endtime=None):
+    def create_request(self,data_format='mseed',stations=[],components=[],email='',instrument=False,order_number=None,starttime=None,endtime=None):
         # order is important!
         self.order_number = f'{order_number}'
         self.start_time = self.time_formatter(starttime)
         self.end_time = self.time_formatter(endtime)
-        self.data_type = "mseed"
-        self.instrument = False # return instrument response?
+        self.data_type = data_format
+        self.instrument = instrument
         self.networks = [station.network for station in stations]
         self.stations = [station.code for station in stations]
         self.location = [None] * len(stations)
@@ -96,7 +98,13 @@ class WFRequest:
     
     @property
     def data(self):
-        return self.__dict__
+        data_dict = self.__dict__
+        if not self.order_number:
+            data_dict.pop('order_number')
+        return data_dict
+
+    def __str__(self):
+        return f'<WFRequest: e_mail={self.e_mail}, networks={self.networks}, stations={self.stations}, start_time={self.start_time}, end_time={self.end_time}>'
 
 class Network:
     pass
@@ -137,22 +145,32 @@ class Client:
     _user_agent = p.USER_AGENTS[0]
     randomize_user_agent = True
     randomize_email = True
+    instrument_response = False
     _headers = p.HEADERS_DEFAULT
     _email = ''
     _order_number = None
     _wf_request = None
     _max_retries = 1
+    ask_has_request_already = False
+    get_order_number = False
     verbosity = 0
     dry_run = False
     _CHUNK_SIZE = 128
 
-    def __init__(self, dry_run=False, email="", verbosity=0, temp_path="temp"):
+    def __init__(self, dry_run=False, email="", data_format="mseed", verbosity=0, temp_path="temp"):
         print(p.WARNING)
         # randomly select a user agent
         self.verbosity = verbosity
         self._init_verbosity()
         self.dry_run = dry_run
         self.temp_path = temp_path
+        if data_format not in ['mseed','fseed','inventory', 'info']:
+            self.data_format = 'mseed'
+        else:
+            if data_format == 'info':
+                self.data_format = 'instrument'
+            else:
+                self.data_format = data_format
         if email:
             self._email = email
             self.randomize_email = False
@@ -175,6 +193,7 @@ class Client:
     def set__user_agent(self, user_agent):
         self._user_agent = user_agent
         self._headers['User-Agent'] = user_agent
+
 
     def _generate_email(self):
         # using temp-mail.org to generate random email address
@@ -221,7 +240,7 @@ class Client:
     def get_networks(self):
         pass
 
-    def get_stations(self,networks=p.NETWORKS):
+    def get_all_stations(self,networks=p.NETWORKS):
         data = p.GET_STATIONS_DEFAULT_DATA
         url = urljoin(p.HOST,p.GET_STATIONS_URL)
         stations_dict = self.make_post_request(url, json=data, suppress_log=True).json()
@@ -231,7 +250,9 @@ class Client:
     def _get_order_number(self):
         url = urljoin(p.HOST,p.GET_ORDER_NUMBER_URL)
         data = self._order_request()
-        resp = self.make_request(urljoin(p.CHECK_HAS_REQUEST_URL, self._email),request_type="GET")
+        if self.ask_has_request_already:
+            resp = self.make_request(urljoin(p.CHECK_HAS_REQUEST_URL, self._email),request_type="GET")
+        
         # print('has request already?')
         # print(resp.json())
         # print('order request data')
@@ -247,12 +268,51 @@ class Client:
             'id': 0, 
         }
 
-        
-    def match_stations(self, net_glob, sta_glob, cha_glob):
+    def _lat_valid(self,lat):
+        return (type(lat) == int or type(lat) == float) and lat>=-90 and lat<=90
+
+    def _lon_valid(self,lon):
+        return (type(lon) == int or type(lon) == float) and lon>=-180 and lon<=180
+
+    def _coords_valid(self, lats=None, lons=None):
+        if lats:
+            lats_valid = all([self._lat_valid(lat) for lat in lats])
+        else:
+            lats_valid = True
+        if lons:
+            lons_valid = all([self._lon_valid(lon) for lon in lons])
+        else:
+            lons_valid = True
+        return lats_valid and lons_valid
+
+    def _validate_win_coords(self, minlatitude=None,maxlatitude=None,minlongitude=None,maxlongitude=None):
+        if minlatitude and maxlatitude and minlongitude and maxlongitude and \
+            self._coords_valid(lats=[minlatitude,maxlatitude],lons=[minlongitude,maxlongitude]):
+            if minlatitude >= maxlatitude:
+                raise ValueError(f'Min Latitude ({minlatitude}) >= Max Latitude ({maxlatitude})')
+            if minlongitude >= maxlongitude:
+                raise ValueError(f'Min Longitude ({minlongitude}) >= Max Longitude ({maxlongitude})')
+        else:
+            raise ValueError(f'Window coordinates not valid')
+
+    def match_stations(self, net_glob, sta_glob, cha_glob, minlatitude=None,maxlatitude=None,minlongitude=None,maxlongitude=None):
         sta_regexp = fnmatch.translate(sta_glob)
         cha_regexp = fnmatch.translate(cha_glob)
         net_regexp = fnmatch.translate(net_glob)
-        return [station for station in self.all_stations if re.match(sta_regexp,station.code) and re.match(cha_regexp,station.device_code) and re.match(net_regexp,station.network)]
+        glob_selection = [station for station in self.all_stations if re.match(sta_regexp,station.code) and re.match(cha_regexp,station.device_code) and re.match(net_regexp,station.network)]
+        if minlatitude and maxlatitude and minlongitude and maxlongitude:
+            self._validate_win_coords(minlatitude=minlatitude,maxlatitude=maxlatitude,minlongitude=minlongitude,maxlongitude=maxlongitude)
+            coord_selection = []
+            for station in glob_selection:
+                if station.latitude <= maxlatitude and \
+                    station.latitude >= minlatitude and \
+                    station.longitude <= maxlongitude and \
+                    station.longitude >= minlongitude:
+                    coord_selection.append(station)
+            return coord_selection
+        else:
+            return glob_selection
+            
 
     def _extract_file(self, file_path, outdir):
         if not zipfile.is_zipfile(file_path):
@@ -280,12 +340,15 @@ class Client:
     def _process_file(self, file_path, order_number):
         file_url = os.path.relpath(file_path,p.FILE_WEB_ROOT)
         url = urljoin(p.HOST,file_url)
-        outdir = os.path.join(self.temp_path,f'{order_number}')
+        dir_name = base64.urlsafe_b64encode(uuid.uuid1().bytes).rstrip(b'=').decode('ascii')
+        outdir = os.path.join(self.temp_path,f'{dir_name}')
+        print(f'Downloading: {url}')
         file_path = self._download_file(url,outdir,file_path)
         if self.verbosity >= 1:
-            print('Unzipping')
+            print('Extracting...')
         if file_path:
             file_list = self._extract_file(file_path,outdir)
+            print('Extracted:',[file.filename for file in file_list])
             if self.verbosity >= 1:
                 print("Extracted:")
                 print([file.filename for file in file_list])
@@ -293,10 +356,10 @@ class Client:
     def _validate(self,network, station, stations, starttime, endtime):
         # startttime < endtime
         if UTCDateTime(starttime) >= UTCDateTime(endtime):
-            print('ERROR: starttime can not be larger than endtime')
+            raise ValueError('starttime can not be larger than endtime')
             return False
         if len(stations) == 0:
-            print(f'ERROR: no stations match the expression: network ~ {network}, station ~ {station}')
+            raise ValueError(f'ERROR: no stations match the expression: network ~ {network}, station ~ {station}')
             return False
         
         return True
@@ -313,6 +376,8 @@ class Client:
             # print(f'Stations:')
             # print(stations)
             return False
+
+        # TODO either get params through instance or arg, not both
         return WFRequest(
             stations = stations, 
             components = components,
@@ -320,10 +385,12 @@ class Client:
             starttime=starttime,
             endtime=endtime,
             email=self._email,
+            data_format=self.data_format,
+            instrument=self.instrument_response,
             )
 
     def make_wf_request(self, wf_request):
-        if not self.dry_run:
+        if not self.dry_run and self.get_order_number:
             order_number = self._get_order_number() # need a new one for each request
             time.sleep(1)
             wf_request.order_number = f'{order_number}'
@@ -377,7 +444,7 @@ class Client:
                         chunk_endtime = self.endtime
                     else:
                         chunk_endtime = chunk_starttime + TEN_DAYS
-                    wf_request = self.create_wf_request(starttime=chunk_starttime, endtime=chunk_endtime,stations=[station])
+                    wf_request = self.create_wf_request(starttime=chunk_starttime, data_format=self.data_format,endtime=chunk_endtime,stations=[station])
                     if self.verbosity >= 1:
                         print('Chunker: request created:',wf_request.data)
                     self.queue.append(wf_request)
@@ -385,15 +452,76 @@ class Client:
         else:
             print('ERROR: Chunker: No stations selected')
             return
+    def get_stations(self, 
+        network, 
+        station, 
+        starttime, 
+        endtime, 
+        attach_response=False,
+        minlatitude=None, maxlatitude=None, minlongitude=None, maxlongitude=None,
+        filename=None, 
+        ):
+        self.data_format = 'inventory'
+        self.instrument_response = True
+        return self.get_data(
+            network, 
+            station, 
+            starttime, 
+            endtime, 
+            quality=None, 
+            minimumlength=None, 
+            longestonly=None, 
+            filename=None, 
+            minlatitude=None, maxlatitude=None, minlongitude=None, maxlongitude=None
+        )
 
-    def get_waveforms(self, network, station, starttime, endtime, quality=None, minimumlength=None, longestonly=None, filename=None, attach_response=False, **kwargs):
+    def get_waveforms(
+        self, 
+        network, 
+        station, 
+        starttime, 
+        endtime, 
+        quality=None, 
+        minimumlength=None, 
+        longestonly=None, 
+        filename=None, 
+        data_format="mseed",
+        minlatitude=None, maxlatitude=None, minlongitude=None, maxlongitude=None,
+        **kwargs
+        ):
+        self.instrument_response = False
+        self.data_format = data_format
+        self.get_data(
+            network, 
+            station, 
+            starttime, 
+            endtime, 
+            quality=None, 
+            minimumlength=None, 
+            longestonly=None, 
+            filename=None, 
+            minlatitude=None, maxlatitude=None, minlongitude=None, maxlongitude=None
+        )
+
+    def get_data(self, 
+        network, 
+        station, 
+        starttime, 
+        endtime, 
+        quality=None, 
+        instrument=False,
+        minimumlength=None, 
+        longestonly=None, 
+        filename=None, 
+        minlatitude=None, maxlatitude=None, minlongitude=None, maxlongitude=None,
+        **kwargs):
         self.starttime = UTCDateTime(starttime)
         self.endtime = UTCDateTime(endtime)
         if not self._email:
             self._generate_email()
         if not self.all_stations:
-            self.get_stations()
-        stations = self.match_stations(network, station, '*')
+            self.get_all_stations()
+        stations = self.match_stations(network, station, '*', minlatitude=minlatitude,maxlatitude=maxlatitude,minlongitude=minlongitude,maxlongitude=maxlongitude)
         if not self._validate(network, station, stations, starttime, endtime):
             print('ERROR: parameters not valid')
             return
@@ -402,6 +530,7 @@ class Client:
         if self.verbosity >= 1:
             print(f'Queue length: {len(self.queue)}')
         for wf_request in self.queue:
+            print(wf_request)
             if self.verbosity >= 1:
                 print(f'Requesting waveform {wf_request.data}')
             res = self.make_wf_request(wf_request)
